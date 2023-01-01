@@ -91,6 +91,8 @@ def unique_with_accuracy(array, accuracy=14):
     if len(array.flat) <= 1:
         return np.array(array.flat)
     array_max = np.max(array)
+    if array_max == 0:
+        return np.array([0])
     return np.unique(np.round(array / array_max, decimals=accuracy)) * array_max
 
 
