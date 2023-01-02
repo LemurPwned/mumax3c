@@ -3,6 +3,8 @@ import micromagneticmodel as mm
 import numpy as np
 
 import mumax3c as mc
+from .util import _identify_subregions
+import warnings
 
 
 def driver_script(driver, system, compute=None, ovf_format="bin4", **kwargs):
@@ -34,11 +36,8 @@ def driver_script(driver, system, compute=None, ovf_format="bin4", **kwargs):
 
     if isinstance(driver, mc.TimeDriver):
         # Extract dynamics equation parameters.
-        gamma0 = (
-            precession[0].gamma0
-            if (precession := system.dynamics.get(type=mm.Precession))
-            else 0
-        )
+        gamma0 = (precession[0].gamma0 if (precession := system.dynamics.get(
+            type=mm.Precession)) else 0)
         if system.dynamics.get(type=mm.Damping):
             alpha = system.dynamics.damping.alpha
         else:
@@ -52,27 +51,82 @@ def driver_script(driver, system, compute=None, ovf_format="bin4", **kwargs):
             mx3 += "doprecess = true\n"
 
         if system.dynamics.get(type=mm.ZhangLi):
-            (zh_li_term,) = system.dynamics.get(type=mm.ZhangLi)
-            u = (
-                zh_li_term.u
-                if isinstance(zh_li_term.u, df.Field)
-                else df.Field(
-                    mesh=system.m.mesh,
-                    dim=3,
-                    value=(1.0, 0.0, 0.0),
-                    norm=zh_li_term.u,
-                )
-            )
+            mx3 += "// ZhangLi term\n"
+            (zh_li_term, ) = system.dynamics.get(type=mm.ZhangLi)
+            u = (zh_li_term.u
+                 if isinstance(zh_li_term.u, df.Field) else df.Field(
+                     mesh=system.m.mesh,
+                     dim=3,
+                     value=(1.0, 0.0, 0.0),
+                     norm=zh_li_term.u,
+                 ))
 
             j = -np.multiply(
-                u
-                * (mm.consts.e / (mm.consts.e * mm.consts.hbar / (2.0 * mm.consts.me))),
+                u * (mm.consts.e / (mm.consts.e * mm.consts.hbar /
+                                    (2.0 * mm.consts.me))),
                 system.m.norm,
             )
             j.write("j.ovf", representation=ovf_format)
             mx3 += f"Xi = {zh_li_term.beta}\n"
             mx3 += "Pol = 1\n"  # Current polarization is 1.
             mx3 += 'J.add(LoadFile("j.ovf"), 1)\n'  # 1 means constant in time.
+
+        if system.dynamics.get(type=mm.Slonczewski):
+            mx3 += "// STT term\n"
+            mx3 += f"DisableZhangLiTorque = true\n"
+            warnings.warn(f"STT supported with cross-direction respective to P only.")
+            (slonczewski_term, ) = system.dynamics.get(type=mm.Slonczewski)
+
+            def __region_defined_quantity_fallback(system_regions: dict, quant,
+                                                   quant_name: str):
+                reg_str = ""
+                iv_regions = {v: k for k, v in system_regions.items()}
+                for reg in quant:
+                    if reg not in iv_regions:
+                        raise ValueError(
+                            f"Region {reg} is not defined in the system.")
+                    quant_val = quant[reg]
+                    if quant_name == "J":
+                        # exception for J, which is a vector quantity
+                        quant_val = (0, 0, quant[reg])
+                    if isinstance(quant_val, tuple) or isinstance(
+                            quant_val, list):
+                        quant_val = f"vector{quant_val}"
+                    reg_str += f"{quant_name}.setregion({iv_regions[reg]}, {quant_val})\n"
+                return reg_str
+
+            def __globally_defined_quantity_fallback(quant, quant_name: str):
+                return f"{quant_name} = {quant}\n"
+
+            def __quant_definition_dispatch(quant, quant_name: str,
+                                            system_regions: dict):
+                if isinstance(quant, df.Field):
+                    raise ValueError(
+                        f"Slonczewski term: {quant_name} with spatially varying parameters is not supported."
+                    )
+                elif isinstance(quant, dict):
+                    return __region_defined_quantity_fallback(
+                        system_regions, quant, quant_name)
+                else:
+                    return __globally_defined_quantity_fallback(
+                        quant, quant_name)
+
+            def __quant_definition():
+                mx3_ = ""
+                _, sr_dict = _identify_subregions(system)
+                mx3_ += __quant_definition_dispatch(slonczewski_term.mp,
+                                                    "FixedLayer", sr_dict)
+                mx3_ += __quant_definition_dispatch(slonczewski_term.Lambda,
+                                                    "Lambda", sr_dict)
+                mx3_ += __quant_definition_dispatch(slonczewski_term.P, "Pol",
+                                                    sr_dict)
+                mx3_ += __quant_definition_dispatch(slonczewski_term.eps_prime,
+                                                    "EpsilonPrime", sr_dict)
+                mx3_ += __quant_definition_dispatch(slonczewski_term.J, "J",
+                                                    sr_dict)
+                return mx3_
+
+            mx3 += __quant_definition()
 
         mx3 += "setsolver(5)\n"
         mx3 += "fixDt = 0\n\n"
