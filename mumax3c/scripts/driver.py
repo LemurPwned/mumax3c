@@ -5,6 +5,7 @@ import numpy as np
 import mumax3c as mc
 from .util import _identify_subregions
 import warnings
+import numbers
 
 
 def driver_script(driver, system, compute=None, ovf_format="bin4", **kwargs):
@@ -74,17 +75,14 @@ def driver_script(driver, system, compute=None, ovf_format="bin4", **kwargs):
         if system.dynamics.get(type=mm.Slonczewski):
             mx3 += "// STT term\n"
             mx3 += f"DisableZhangLiTorque = true\n"
-            warnings.warn(f"STT supported with cross-direction respective to P only.")
+            warnings.warn(
+                f"STT supported with cross-direction respective to P only.")
             (slonczewski_term, ) = system.dynamics.get(type=mm.Slonczewski)
 
-            def __region_defined_quantity_fallback(system_regions: dict, quant,
+            def __region_defined_quantity_fallback(system, quant,
                                                    quant_name: str):
                 reg_str = ""
-                iv_regions = {v: k for k, v in system_regions.items()}
                 for reg in quant:
-                    if reg not in iv_regions:
-                        raise ValueError(
-                            f"Region {reg} is not defined in the system.")
                     quant_val = quant[reg]
                     if quant_name == "J":
                         # exception for J, which is a vector quantity
@@ -92,51 +90,53 @@ def driver_script(driver, system, compute=None, ovf_format="bin4", **kwargs):
                     if isinstance(quant_val, tuple) or isinstance(
                             quant_val, list):
                         quant_val = f"vector{quant_val}"
-                    reg_str += f"{quant_name}.setregion({iv_regions[reg]}, {quant_val})\n"
+                    reg_indx = system.region_relator[reg][0]
+                    reg_str += f"{quant_name}.setregion({reg_indx}, {quant_val})\n"
                 return reg_str
 
             def __globally_defined_quantity_fallback(quant, quant_name: str):
                 return f"{quant_name} = {quant}\n"
 
-            def __quant_definition_dispatch(quant, quant_name: str,
-                                            system_regions: dict):
+            def __quant_definition_dispatch(quant, quant_name: str, system):
                 if isinstance(quant, df.Field):
                     raise ValueError(
                         f"Slonczewski term: {quant_name} with spatially varying parameters is not supported."
                     )
                 elif isinstance(quant, dict):
                     return __region_defined_quantity_fallback(
-                        system_regions, quant, quant_name)
+                        system, quant, quant_name)
                 else:
                     return __globally_defined_quantity_fallback(
                         quant, quant_name)
 
             def __quant_definition():
                 mx3_ = ""
-                _, sr_dict = _identify_subregions(system)
                 mx3_ += __quant_definition_dispatch(slonczewski_term.mp,
-                                                    "FixedLayer", sr_dict)
+                                                    "FixedLayer", system)
                 mx3_ += __quant_definition_dispatch(slonczewski_term.Lambda,
-                                                    "Lambda", sr_dict)
+                                                    "Lambda", system)
                 mx3_ += __quant_definition_dispatch(slonczewski_term.P, "Pol",
-                                                    sr_dict)
+                                                    system)
                 mx3_ += __quant_definition_dispatch(slonczewski_term.eps_prime,
-                                                    "EpsilonPrime", sr_dict)
+                                                    "EpsilonPrime", system)
                 mx3_ += __quant_definition_dispatch(slonczewski_term.J, "J",
-                                                    sr_dict)
+                                                    system)
                 return mx3_
 
             mx3 += __quant_definition()
 
-        mx3 += "setsolver(5)\n"
-        mx3 += "fixDt = 0\n\n"
-
+        mx3 += "relax()\n"
         t, n = kwargs["t"], kwargs["n"]
-
+        dt = t/n
+        mx3 += "setsolver(5)\n"
+        mx3 += f"fixDt = {dt}\n\n"
+        # mx3 += f"autosave(m, {dt})\n"
+        # mx3 += f"tableautosave({dt})\n"
+        # mx3 += f"run({t})\n"
         mx3 += f"for snap_counter:=0; snap_counter<{n}; snap_counter++{{\n"
         mx3 += f"    run({t/n})\n"
-        mx3 += "    save(m_full)\n"
-        mx3 += "    tablesave()\n"
-        mx3 += "}"
+        mx3 +=  "    save(m_full)\n"
+        mx3 +=  "    tablesave()\n"
+        mx3 +=  "}"
 
     return mx3

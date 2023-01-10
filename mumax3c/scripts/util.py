@@ -37,7 +37,7 @@ def mumax3_regions(system, ovf_format="bin4", abspath=True):
         raise ValueError("Ms values cannot be nan.")
     if 0 in Ms_array:
         region_indices = np.full((*system.m.mesh.n, 1), fill_value=255)
-        mx3 += "Msat.setRegion(255, 0.0)\n"
+        mx3 += "Msat.setregion(255, 0.0)\n"
         max_index = 254
     else:
         region_indices = np.empty((*system.m.mesh.n, 1))
